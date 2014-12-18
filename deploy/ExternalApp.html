@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Delete Builds</title>
+    <!--  (c) 2014 Rally Software Development Corp.  All Rights Reserved. -->
+    <!--  Build Date: Wed Dec 17 2014 20:24:40 GMT-0800 (PST) -->
+    
+    <script type="text/javascript">
+        var APP_BUILD_DATE = "Wed Dec 17 2014 20:24:40 GMT-0800 (PST)";
+        var CHECKSUM = [%= checksum %];
+    </script>
+    
+    <script type="text/javascript" src="https://demo-west.rallydev.com/apps/2.0rc3/sdk-debug.js?apiKey=_PUT_APIKEY_HERE_"></script>
+
+    <script type="text/javascript">
+        Rally.onReady(function() {
+             
+/**
+ * A link that pops up a version dialog box
+ */
+
+Ext.define('Rally.technicalservices.InfoLink',{
+    extend: 'Ext.Component',
+    alias: 'widget.tsinfolink',
+    
+    /**
+     * @cfg {String} informationHtml
+     * Additional text to be displayed on the popup dialog (for exmaple,
+     * to add a description of the app's use or functionality)
+     */
+    informationHtml: null,
+    
+    /**
+     * 
+     * cfg {String} title
+     * The title for the dialog box
+     */
+     title: "Build Information",
+    
+    renderTpl: "<div id='{id}-infolinkWrap' class='tsinfolink'>i</div>",
+
+    initComponent: function() {
+        this.callParent(arguments);
+       
+    },
+    
+    onRender: function() {
+        this.callParent(arguments);
+        this.mon(this.el,'click',this.onClick,this);
+    },
+    _generateChecksum: function(string){
+        var chk = 0x12345678,
+            i;
+        string = string.replace(/var CHECKSUM = .*;/,"");
+        string = string.replace(/\s/g,"");  //Remove all whitespace from the string.
+        
+        for (i = 0; i < string.length; i++) {
+            chk += (string.charCodeAt(i) * i);
+        }
+    
+        return chk;
+    },
+    _checkChecksum: function(container) {
+        var me = this;
+        Ext.Ajax.request({
+            url: document.URL,
+            params: {
+                id: 1
+            },
+            success: function (response) {
+                text = response.responseText;
+                if ( CHECKSUM ) {
+                    if ( CHECKSUM !== me._generateChecksum(text) ) {
+                        console.log("Checksums don't match!");
+                        if ( me.dialog ) {
+                            me.dialog.add({xtype:'container',html:'Checksums do not match'});
+                        }
+                    }
+                }
+            }
+        });
+    },
+    onClick: function(e) {
+        var me = this;
+        this._checkChecksum(this);
+        
+        var dialog_items = [];
+        
+        if ( this.informationHtml ) {
+            dialog_items.push({
+                xtype:'container',
+                html: this.informationHtml
+            });
+        }
+                
+        dialog_items.push({
+            xtype:'container',
+            html:"This app was created by the Rally Technical Services Team."
+        });
+        
+        if ( APP_BUILD_DATE ) {
+            dialog_items.push({
+                xtype:'container',
+                html:'Build date/time: ' + APP_BUILD_DATE
+            });
+        }
+        
+        if (this.dialog){this.dialog.destroy();}
+        this.dialog = Ext.create('Rally.ui.dialog.Dialog',{
+            defaults: { padding: 5, margin: 5 },
+            closable: true,
+            draggable: true,
+            title: me.title,
+            items: dialog_items
+        });
+        this.dialog.show();
+    }
+});
+
+/*
+ */
+Ext.define('Rally.technicalservices.Logger',{
+    constructor: function(config){
+        Ext.apply(this,config);
+    },
+    log: function(args){
+        var timestamp = "[ " + Ext.util.Format.date(new Date(), "Y-m-d H:i:s.u") + " ]";
+        //var output_args = arguments;
+        //output_args.unshift( [ "[ " + timestamp + " ]" ] );
+        //output_args = Ext.Array.push(output_args,arguments);
+        
+        var output_args = [];
+        output_args = Ext.Array.push(output_args,[timestamp]);
+        output_args = Ext.Array.push(output_args, Ext.Array.slice(arguments,0));
+
+        window.console && console.log.apply(console,output_args);
+    }
+
+});
+
+Ext.define('Rally.technicalservices.bulkdelete', {
+    extend: 'Rally.ui.menu.bulk.MenuItem',
+    alias: 'widget.tsbulkdelete',
+
+    config: {
+        text: 'Delete',
+        handler: function() {
+            this._onDeleteClicked()
+        },
+        predicate: function(records) {
+            return _.every(records, function(record) {
+                return /\.Build/.test(record.self.getName());
+            });
+        }
+    },
+    
+    _onDeleteClicked: function() {
+       
+        if (this.onBeforeAction(this.records) === false) {
+            return;
+        }
+
+        var me = this,
+            records = me.records,
+            successfulRecords = [];
+
+        var promises = [];
+        _.each(records, function (record) {
+            // marshal into a sequence so we don't 
+            // get a concurrency conflict
+            var f = function() {
+                console.log("Removing ", record);
+                return me._deleteRecord(record);
+            };
+            promises.push(f);
+        });
+        Deft.Chain.sequence(promises).then({
+            success: function(results) {
+              successfulRecords = Ext.Array.flatten(results);
+            },
+            failure: function(error) {
+              alert(error);
+            }
+        }).always(function() {
+            Ext.callback(me.onActionComplete, null, [successfulRecords, []]);
+        });
+        
+    },
+    
+    _deleteRecord: function(record) {
+        var deferred = Ext.create('Deft.Deferred');
+        record.destroy({
+            callback: function(result, operation) {
+                if(operation.wasSuccessful()) {
+                    console.log("resolving:", record);
+                    deferred.resolve([record]);
+                } else {
+                    deferred.reject(operation.Errors);
+                }
+            }
+        });
+        return deferred;
+    }
+
+});
+/*
+ * Make it so builds can be bulk edited (need checkboxes)
+ */
+Ext.override(Rally.ui.grid.CheckboxModel, {
+
+    _recordIsSelectable: function(record) {
+        var selectable = record.self.isArtifact() && record.get('updatable');
+        
+        if ( /\.Build/.test(record.self.getName()) ) {
+            selectable = true;
+        }
+        return selectable;
+    }
+    
+});
+
+/*
+ * define the menu
+ */
+Ext.override(Rally.ui.menu.bulk.RecordMenu,{
+    items: [
+        {xtype: 'tsbulkdelete'}
+    ]
+});
+
+Ext.define('CustomApp', {
+    extend: 'Rally.app.App',
+    componentCls: 'app',
+    logger: new Rally.technicalservices.Logger(),
+    defaults: { margin: 10 },
+    items: [
+        {xtype:'container',itemId:'message_box'},
+        {xtype:'container',itemId:'display_box'},
+        {xtype:'tsinfolink'}
+    ],
+    launch: function() {
+        var m_name = 'Build',
+            m_fields = ['BuildDefinition','Number','CreationDate','Status'];
+        
+        this._makeGrid(m_name, m_fields);
+    },
+    _makeGrid: function(model_name, model_fields){        
+        var store = Ext.create('Rally.data.wsapi.Store', {
+            model: model_name,
+            fetch: model_fields,
+            autoLoad: true
+        });
+        this.down('#display_box').add({
+            xtype: 'rallygrid',
+            store: store,
+            enableBulkEdit: true,
+            columnCfgs: model_fields
+        });
+    }
+});
+            
+               Rally.launchApp('CustomApp', {
+                   name: 'Delete Builds'
+               });
+        });
+    </script>
+    
+    <style type="text/css">
+
+.app {
+}
+.tsinfolink {
+    position:absolute;
+    right:0px;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    text-align: center;
+    color: white;
+    background: #C0C0C0;
+    border-style: solid;
+    border-width: 1px;
+    margin-top: 25px;
+    margin-right: 5px;
+    cursor: pointer;
+}
+    </style>
+
+</head>
+<body></body>
+</html>
